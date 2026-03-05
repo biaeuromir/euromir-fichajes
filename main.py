@@ -203,6 +203,75 @@ async def estado(eid:int):
     ci=await get_checkin(eid);f=await get_fichajes(eid,datetime.now().strftime("%Y-%m-%d"))
     return{"checkin":ci,"fichajes":f,"horas_hoy":sum(x.get("horas_decimal",0)for x in f),"pending":eid in pending}
 
+
+
+class ModificarFichaje(BaseModel):
+    empleado_nombre: Optional[str] = None
+    empleado_id: Optional[int] = None
+    fecha: Optional[str] = None
+    nueva_hora_inicio: Optional[str] = None
+    nueva_hora_fin: Optional[str] = None
+    nuevas_horas: Optional[float] = None
+    fichaje_id: Optional[int] = None
+    motivo: str = "Corrección"
+
+@app.post("/modificar-fichaje")
+async def modificar_fichaje(req: ModificarFichaje):
+    # Find the fichaje
+    fichaje = None
+    
+    if req.fichaje_id:
+        result = await db_get(f"fichajes_tramos?id=eq.{req.fichaje_id}&select=*")
+        if result: fichaje = result[0]
+    
+    if not fichaje and req.empleado_id and req.fecha:
+        result = await db_get(f"fichajes_tramos?empleado_id=eq.{req.empleado_id}&fecha=eq.{req.fecha}&select=*&order=id.desc&limit=1")
+        if result: fichaje = result[0]
+    
+    if not fichaje and req.empleado_nombre and req.fecha:
+        result = await db_get(f"fichajes_tramos?empleado_nombre=ilike.*{req.empleado_nombre.split()[0]}*&fecha=eq.{req.fecha or datetime.now().strftime('%Y-%m-%d')}&select=*&order=id.desc&limit=1")
+        if result: fichaje = result[0]
+    
+    if not fichaje:
+        return {"success": False, "mensaje": "❌ No encontré el fichaje para modificar"}
+    
+    # Calculate new values
+    hi = req.nueva_hora_inicio or str(fichaje.get("hora_inicio",""))[:5]
+    hf = req.nueva_hora_fin or str(fichaje.get("hora_fin",""))[:5]
+    
+    if req.nuevas_horas:
+        netas = req.nuevas_horas
+    else:
+        h1, m1 = map(int, hi.split(":"))
+        h2, m2 = map(int, hf.split(":"))
+        total = ((h2*60+m2)-(h1*60+m1))/60
+        netas = round(total - 1 if total > 6 else total, 1)
+    
+    tarifa = fichaje.get("coste_hora", 0)
+    coste = round(netas * tarifa, 2)
+    
+    # Update
+    update = {
+        "hora_inicio": hi,
+        "hora_fin": hf,
+        "horas_decimal": netas,
+        "coste_total": coste
+    }
+    await db_patch("fichajes_tramos", f"id=eq.{fichaje['id']}", update)
+    
+    emp_nombre = fichaje.get("empleado_nombre", "Empleado")
+    
+    # Notify employee
+    emp = await db_get(f"empleados?id=eq.{fichaje['empleado_id']}&select=telefono")
+    if emp and emp[0].get("telefono"):
+        await wa(emp[0]["telefono"], f"⚠️ *{emp_nombre}*, tu fichaje ha sido corregido:\n🕐 {hi}-{hf} ({netas}h)\n📝 Motivo: {req.motivo}")
+    
+    # Notify admin
+    await wa(ADMIN, f"📝 Fichaje corregido: *{emp_nombre}* → {hi}-{hf} ({netas}h). Motivo: {req.motivo}")
+    
+    return {"success": True, "mensaje": f"✅ Corregido: *{emp_nombre}* {hi}-{hf} ({netas}h)", "fichaje_id": fichaje["id"]}
+
+
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"5.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"6.0"}
