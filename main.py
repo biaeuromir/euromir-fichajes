@@ -74,16 +74,39 @@ async def notificar_encargado(obra_id, emp_nombre, hi, hf, netas):
             await wa(enc[0]["telefono"], f"📋 Fichaje nuevo:\n👤 *{emp_nombre}*\n🕐 {hi}-{hf} ({netas}h)\n\nPara confirmar: *confirmo {emp_nombre.split()[0]}*")
     await wa(ADMIN, f"📋 Nuevo: *{emp_nombre}* {hi}-{hf} ({netas}h)")
 
+
+NUMS={"cero":0,"una":1,"uno":1,"dos":2,"tres":3,"cuatro":4,"cinco":5,"seis":6,"siete":7,"ocho":8,"nueve":9,"diez":10,"once":11,"doce":12,"trece":13,"catorce":14,"quince":15,"dieciseis":16,"dieciséis":16,"diecisiete":17,"dieciocho":18,"diecinueve":19,"veinte":20,"veintiuno":21,"veintidos":22,"veintiuna":21}
+
+def palabras_a_numeros(t):
+    """Convierte palabras de horas a números: 'de nueve a cinco' → 'de 9 a 5'"""
+    for palabra,num in NUMS.items():
+        t=re.sub(r'\b'+palabra+r'\b',str(num),t)
+    # "y media" → :30, "y cuarto" → :15
+    t=re.sub(r'(\d+)\s*y media',lambda m:f"{m.group(1)}:30",t)
+    t=re.sub(r'(\d+)\s*y cuarto',lambda m:f"{m.group(1)}:15",t)
+    return t
+
 def parse_fecha(t):
     t=t.lower().strip()
     if "ayer" in t: return(datetime.now()-timedelta(days=1)).strftime("%Y-%m-%d")
     if "hoy" in t: return datetime.now().strftime("%Y-%m-%d")
+    if "anteayer" in t: return(datetime.now()-timedelta(days=2)).strftime("%Y-%m-%d")
+    # Días de la semana: "el lunes", "el martes", etc.
+    dias={"lunes":0,"martes":1,"miercoles":2,"miércoles":2,"jueves":3,"viernes":4,"sabado":5,"sábado":5,"domingo":6}
+    for dia,num in dias.items():
+        if dia in t:
+            hoy=datetime.now()
+            diff=(hoy.weekday()-num)%7
+            if diff==0:diff=7  # Si es hoy mismo, asumir semana pasada
+            return(hoy-timedelta(days=diff)).strftime("%Y-%m-%d")
+    # DD-pMM-YYYY, DD-MM-YYYY, DD/MM/YYYY
     m=re.search(r'(\d{1,2})[-/]p?(\d{1,2})[-/](\d{4})',t)
     if m: return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
     return None
 
 def parse_horas(t):
     t=t.lower().strip()
+    t=palabras_a_numeros(t)
     # "entrada 09:00 salida 18:00"
     m=re.search(r'entrada\s*(\d{1,2})[:\\.]?(\d{2})?\s*(?:y\s*)?salida\s*(\d{1,2})[:\\.]?(\d{2})?',t)
     if m:
@@ -287,4 +310,4 @@ async def modificar_fichaje(req: ModificarFichaje):
 
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"7.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"9.0"}
