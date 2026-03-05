@@ -308,6 +308,161 @@ async def modificar_fichaje(req: ModificarFichaje):
     return {"success": True, "mensaje": f"✅ Corregido: *{emp_nombre}* {hi}-{hf} ({netas}h)", "fichaje_id": fichaje["id"]}
 
 
+
+
+class CalcularNomina(BaseModel):
+    empleado_nombre: str
+    mes: int
+    anio: int
+
+@app.post("/calcular-nomina")
+async def calcular_nomina(req: CalcularNomina):
+    # 1. BUSCAR EMPLEADO
+    emps = await db_get(f"empleados?nombre=ilike.*{req.empleado_nombre.split()[0]}*&select=id,nombre,nomina_fija,categoria,coste_hora,fuera_madrid_hora,extra_madrid_hora")
+    if not emps: return {"success": False, "mensaje": f"❌ No encontré empleado: {req.empleado_nombre}"}
+    emp = emps[0] if len(emps) == 1 else next((e for e in emps if req.empleado_nombre.lower() in e.get("nombre","").lower()), emps[0])
+    
+    nombre = emp.get("nombre", "Desconocido")
+    nomina_fija = float(emp.get("nomina_fija") or 0)
+    cat = (emp.get("categoria") or "").lower()
+    tarifas_def = {"encargado": {"extra": 20, "fuera": 25}, "oficial": {"extra": 12, "fuera": 15}, "ayudante": {"extra": 10, "fuera": 12}}
+    td = tarifas_def.get(cat, {"extra": 12, "fuera": 15})
+    tarifa_extra = float(emp.get("extra_madrid_hora") or emp.get("coste_hora") or td["extra"])
+    tarifa_fuera = float(emp.get("fuera_madrid_hora") or td["fuera"])
+    emp_id = emp["id"]
+
+    # 2. CALENDARIO LABORAL
+    fecha_inicio = f"{req.anio}-{req.mes:02d}-01"
+    if req.mes == 12: fecha_fin = f"{req.anio+1}-01-01"
+    else: fecha_fin = f"{req.anio}-{req.mes+1:02d}-01"
+    calendario = await db_get(f"calendario_laboral?fecha=gte.{fecha_inicio}&fecha=lt.{fecha_fin}&select=fecha,tipo_dia,es_festivo")
+    
+    dias_laborables = sum(1 for d in calendario if d.get("tipo_dia") == "LABORABLE")
+    dias_festivos = sum(1 for d in calendario if d.get("tipo_dia") == "FESTIVO" or d.get("es_festivo"))
+    dias_convenio = sum(1 for d in calendario if d.get("tipo_dia") == "CONVENIO")
+    dias_para_nomina = dias_laborables + dias_festivos + dias_convenio
+    if dias_para_nomina == 0: dias_para_nomina = 22  # fallback
+
+    # 3. FICHAJES DEL MES
+    fichajes = await db_get(f"fichajes_tramos?empleado_id=eq.{emp_id}&fecha=gte.{fecha_inicio}&fecha=lt.{fecha_fin}&estado=in.(BORRADOR,CONFIRMADO)&select=fecha,horas_decimal,fuera_madrid,tipo_dia,hora_inicio,turno_noche")
+    
+    # Agrupar por día
+    por_dia = {}
+    for f in fichajes:
+        fecha = str(f.get("fecha",""))[:10]
+        if fecha not in por_dia: por_dia[fecha] = []
+        por_dia[fecha].append(f)
+    
+    horas_normales_madrid = 0
+    horas_extra_madrid = 0
+    horas_bonif_finde = 0
+    horas_bonif_noche = 0
+    horas_fuera = 0
+    dias_trabajados = 0
+    dias_madrid = 0
+    dias_fuera_count = 0
+    
+    for fecha, tramos in por_dia.items():
+        dias_trabajados += 1
+        horas_dia = sum(float(t.get("horas_decimal") or 0) for t in tramos)
+        es_fuera = any(t.get("fuera_madrid") in (True, "true", "SI", "si") for t in tramos)
+        
+        # Tipo día: del fichaje o del calendario
+        tipo = ""
+        for t in tramos:
+            if t.get("tipo_dia"): tipo = t["tipo_dia"].upper()
+        if not tipo:
+            cal = next((c for c in calendario if str(c.get("fecha",""))[:10] == fecha), None)
+            if cal: tipo = cal.get("tipo_dia", "LABORABLE")
+            else: tipo = "LABORABLE"
+        
+        # Turno noche
+        turno_noche = any(t.get("turno_noche") in ("SI", True) for t in tramos)
+        for t in tramos:
+            hi = str(t.get("hora_inicio",""))[:5]
+            if hi and (hi >= "20:00" or hi <= "06:00"): turno_noche = True
+        
+        if es_fuera:
+            dias_fuera_count += 1
+            horas_fuera += horas_dia
+        else:
+            dias_madrid += 1
+            if tipo == "LABORABLE":
+                extra = max(0, horas_dia - 8)
+                horas_normales_madrid += (horas_dia - extra)
+                horas_extra_madrid += extra
+            elif tipo in ("SABADO", "FESTIVO", "CONVENIO"):
+                horas_extra_madrid += horas_dia
+                # Bonificación sábado/festivo
+                if horas_dia >= 8: horas_bonif_finde += 3
+                elif horas_dia >= 6: horas_bonif_finde += 2
+            
+            # Bonificación noche (misma regla)
+            if turno_noche:
+                if horas_dia >= 8: horas_bonif_noche += 3
+                elif horas_dia >= 6: horas_bonif_noche += 2
+
+    # 4. ANTICIPOS Y PAGOS
+    anticipos = await db_get(f"anticipos?empleado_id=eq.{emp_id}&mes=eq.{req.mes}&anio=eq.{req.anio}&estado=eq.APROBADO&select=importe,fecha")
+    pagos = await db_get(f"pagos_nomina?empleado_id=eq.{emp_id}&mes=eq.{req.mes}&anio=eq.{req.anio}&select=importe,fecha_pago,concepto")
+    total_anticipos = sum(float(a.get("importe",0)) for a in anticipos)
+    total_pagos = sum(float(p.get("importe",0)) for p in pagos)
+
+    # 5. CÁLCULOS
+    nomina_proporcional = round(nomina_fija * dias_madrid / dias_para_nomina, 2) if dias_para_nomina > 0 else 0
+    total_extras = horas_extra_madrid + horas_bonif_finde + horas_bonif_noche
+    pago_extras = round(total_extras * tarifa_extra, 2)
+    pago_fuera = round(horas_fuera * tarifa_fuera, 2)
+    bruto = round(nomina_proporcional + pago_extras + pago_fuera, 2)
+    total_pagado = round(total_anticipos + total_pagos, 2)
+    pendiente = round(bruto - total_pagado, 2)
+
+    # 6. RESUMEN
+    r = []
+    r.append(f"📊 *NÓMINA {nombre} - {req.mes:02d}/{req.anio}*")
+    r.append(f"Nómina base: {nomina_fija}€")
+    r.append(f"Días laborables: {dias_para_nomina} | Trabajados: {dias_trabajados} ({dias_madrid} Madrid + {dias_fuera_count} fuera)")
+    r.append("---")
+    if dias_madrid > 0:
+        r.append(f"🏗️ *MADRID* ({dias_madrid} días): {nomina_proporcional}€")
+        if total_extras > 0:
+            if horas_extra_madrid > 0: r.append(f"  Horas extra: {horas_extra_madrid}h")
+            if horas_bonif_noche > 0: r.append(f"  Bonif. noche: +{horas_bonif_noche}h")
+            if horas_bonif_finde > 0: r.append(f"  Bonif. sáb/fest: +{horas_bonif_finde}h")
+            r.append(f"  Extras: {total_extras}h × {tarifa_extra}€ = {pago_extras}€")
+    if dias_fuera_count > 0:
+        r.append(f"🚗 *FUERA MADRID* ({dias_fuera_count} días): {horas_fuera}h × {tarifa_fuera}€ = {pago_fuera}€")
+    r.append("---")
+    r.append(f"💰 *BRUTO: {bruto}€*")
+    if anticipos:
+        r.append("📋 Anticipos:")
+        for a in anticipos: r.append(f"  {a.get('fecha','')}: -{float(a.get('importe',0))}€")
+    if pagos:
+        r.append("💳 Pagos:")
+        for p in pagos: r.append(f"  {p.get('fecha_pago','')}: -{float(p.get('importe',0))}€ ({p.get('concepto','transferencia')})")
+    if total_pagado > 0:
+        r.append("---")
+        r.append(f"Total pagado: {total_pagado}€")
+    r.append(f"📌 *PENDIENTE: {pendiente}€*")
+    if dias_trabajados == 0: r.append("ℹ️ Sin fichajes confirmados este mes")
+
+    return {
+        "success": True,
+        "resumen": "\n".join(r),
+        "datos": {
+            "empleado": nombre, "mes": req.mes, "anio": req.anio,
+            "nomina_fija": nomina_fija, "dias_laborables": dias_para_nomina,
+            "dias_trabajados": dias_trabajados, "dias_madrid": dias_madrid, "dias_fuera": dias_fuera_count,
+            "nomina_proporcional": nomina_proporcional,
+            "horas_extra": horas_extra_madrid, "bonif_noche": horas_bonif_noche, "bonif_finde": horas_bonif_finde,
+            "total_extras_h": total_extras, "pago_extras": pago_extras, "tarifa_extra": tarifa_extra,
+            "horas_fuera": horas_fuera, "pago_fuera": pago_fuera, "tarifa_fuera": tarifa_fuera,
+            "bruto": bruto, "anticipos": total_anticipos, "pagos": total_pagos,
+            "total_pagado": total_pagado, "pendiente": pendiente
+        }
+    }
+
+
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"9.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"10.0"}
