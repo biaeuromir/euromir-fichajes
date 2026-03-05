@@ -74,8 +74,21 @@ async def notificar_encargado(obra_id, emp_nombre, hi, hf, netas):
             await wa(enc[0]["telefono"], f"📋 Fichaje nuevo:\n👤 *{emp_nombre}*\n🕐 {hi}-{hf} ({netas}h)\n\nPara confirmar: *confirmo {emp_nombre.split()[0]}*")
     await wa(ADMIN, f"📋 Nuevo: *{emp_nombre}* {hi}-{hf} ({netas}h)")
 
+def parse_fecha(t):
+    t=t.lower().strip()
+    if "ayer" in t: return(datetime.now()-timedelta(days=1)).strftime("%Y-%m-%d")
+    if "hoy" in t: return datetime.now().strftime("%Y-%m-%d")
+    m=re.search(r'(\d{1,2})[-/]p?(\d{1,2})[-/](\d{4})',t)
+    if m: return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    return None
+
 def parse_horas(t):
     t=t.lower().strip()
+    # "entrada 09:00 salida 18:00"
+    m=re.search(r'entrada\s*(\d{1,2})[:\\.]?(\d{2})?\s*(?:y\s*)?salida\s*(\d{1,2})[:\\.]?(\d{2})?',t)
+    if m:
+        h1,m1,h2,m2=int(m.group(1)),int(m.group(2)or 0),int(m.group(3)),int(m.group(4)or 0)
+        return{"hora_inicio":f"{h1:02d}:{m1:02d}","hora_fin":f"{h2:02d}:{m2:02d}","horas":((h2*60+m2)-(h1*60+m1))/60}
     m=re.search(r'de\s+(\d{1,2})[:\.]?(\d{2})?\s+a\s+(?:las\s+)?(\d{1,2})[:\.]?(\d{2})?',t)
     if m: h1,m1,h2,m2=int(m.group(1)),int(m.group(2)or 0),int(m.group(3)),int(m.group(4)or 0); return{"hora_inicio":f"{h1:02d}:{m1:02d}","hora_fin":f"{h2:02d}:{m2:02d}","horas":((h2*60+m2)-(h1*60+m1))/60}
     m=re.search(r'(?:a las|las)\s+(\d{1,2})[:\.]?(\d{2})?\s*(?:y|,)?\s*(?:salgo|termino|acabo|hasta)\s*(?:a las|las)?\s*(\d{1,2})[:\.]?(\d{2})?',t)
@@ -101,7 +114,7 @@ def fmt_obras(obras):
 
 @app.post("/procesar-fichaje")
 async def procesar_fichaje(req:Msg):
-    fecha=req.fecha or datetime.now().strftime("%Y-%m-%d")
+    fecha=req.fecha or parse_fecha(req.mensaje) or datetime.now().strftime("%Y-%m-%d")
     checkin=await get_checkin(req.empleado_id)
     obras=await get_obras()
     horas=parse_horas(req.mensaje)
@@ -274,4 +287,4 @@ async def modificar_fichaje(req: ModificarFichaje):
 
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"6.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"7.0"}
