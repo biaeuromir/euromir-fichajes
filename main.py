@@ -1,4 +1,3 @@
-# v11 fix dates
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
@@ -336,7 +335,9 @@ async def calcular_nomina(req: CalcularNomina):
     fecha_inicio = f"{req.anio}-{req.mes:02d}-01"
     if req.mes == 12: fecha_fin = f"{req.anio+1}-01-01"
     else: fecha_fin = f"{req.anio}-{req.mes+1:02d}-01"
-    calendario = await db_get(f"calendario_laboral?and=(fecha.gte.{fecha_inicio},fecha.lt.{fecha_fin})&select=fecha,tipo_dia,es_festivo")
+    calendario_raw = await db_get("calendario_laboral?select=fecha,tipo_dia,es_festivo&limit=400")
+    mes_str = f"{req.anio}-{req.mes:02d}"
+    calendario = [d for d in calendario_raw if str(d.get("fecha",""))[:7] == mes_str]
     
     dias_laborables = sum(1 for d in calendario if d.get("tipo_dia") == "LABORABLE")
     dias_festivos = sum(1 for d in calendario if d.get("tipo_dia") == "FESTIVO" or d.get("es_festivo"))
@@ -345,7 +346,8 @@ async def calcular_nomina(req: CalcularNomina):
     if dias_para_nomina == 0: dias_para_nomina = 22  # fallback
 
     # 3. FICHAJES DEL MES
-    fichajes = await db_get(f"fichajes_tramos?empleado_id=eq.{emp_id}&and=(fecha.gte.{fecha_inicio},fecha.lt.{fecha_fin})&estado=in.(BORRADOR,CONFIRMADO)&select=fecha,horas_decimal,fuera_madrid,tipo_dia,hora_inicio,turno_noche")
+    fichajes_raw = await db_get(f"fichajes_tramos?empleado_id=eq.{emp_id}&estado=in.(BORRADOR,CONFIRMADO)&select=fecha,horas_decimal,fuera_madrid,tipo_dia,hora_inicio,turno_noche&limit=200")
+    fichajes = [f for f in fichajes_raw if str(f.get("fecha",""))[:7] == mes_str]
     
     # Agrupar por día
     por_dia = {}
@@ -466,4 +468,4 @@ async def calcular_nomina(req: CalcularNomina):
 
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"11.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"12.0"}
