@@ -340,7 +340,7 @@ async def calcular_nomina(req: CalcularNomina):
     calendario = [d for d in calendario_raw if str(d.get("fecha",""))[:7] == mes_str]
     
     dias_laborables = sum(1 for d in calendario if d.get("tipo_dia") == "LABORABLE")
-    dias_festivos = sum(1 for d in calendario if d.get("tipo_dia") == "FESTIVO" or d.get("es_festivo"))
+    dias_festivos = sum(1 for d in calendario if d.get("tipo_dia") == "FESTIVO" or d.get("es_festivo") in (True, "SI", "si", "true"))
     dias_convenio = sum(1 for d in calendario if d.get("tipo_dia") == "CONVENIO")
     dias_para_nomina = dias_laborables + dias_festivos + dias_convenio
     if dias_para_nomina == 0: dias_para_nomina = 22  # fallback
@@ -468,4 +468,4 @@ async def calcular_nomina(req: CalcularNomina):
 
 @app.get("/health")
 async def health():
-    return{"status":"ok","service":"euromir-fichajes","version":"12.0"}
+    return{"status":"ok","service":"euromir-fichajes","version":"13.0"}
