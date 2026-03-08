@@ -161,6 +161,7 @@ async def procesar_fichaje(req:Msg):
             del pending[req.empleado_id]
             if isinstance(r,dict)and"error"in r:return{"accion":"error","mensaje":"Error al registrar"}
             # NOTIFY ENCARGADO + ADMIN
+            await call_wf17(datos)
             await notificar_encargado(obra["id"],req.empleado_nombre,p["hora_inicio"],p["hora_fin"],n)
             return{"accion":"registrado","mensaje":f"✅ Borrador: *{req.empleado_nombre}* {p['hora_inicio']}-{p['hora_fin']} ({n}h) en *{obra['nombre']}*. Tu encargado lo revisará 👍"}
 
@@ -202,6 +203,7 @@ async def check_out(req:CheckOutReq):
     fuera=obra.get("fuera_madrid",False);tarifa=req.fuera_madrid_hora if fuera else req.coste_hora
     datos={"fecha":ci["fecha"],"empleado_id":req.empleado_id,"empleado_nombre":req.empleado_nombre,"obra_id":obra.get("id"),"obra_nombre":ci["obra"],"hora_inicio":ci["hora"],"hora_fin":hs,"horas_decimal":n,"coste_hora":tarifa,"coste_total":round(n*tarifa,2),"estado":"BORRADOR","tipo_dia":"LABORABLE","fuera_madrid":fuera}
     await db_post("fichajes_tramos",datos)
+    await call_wf17(datos)
     await borrar_checkin(req.empleado_id)
     if obra.get("id"):await notificar_encargado(obra["id"],req.empleado_nombre,ci["hora"],hs,n)
     return{"success":True,"mensaje":f"✅ {n}h netas ({ci['hora']}-{hs}). Borrador en *{ci['obra']}* 👍"}
